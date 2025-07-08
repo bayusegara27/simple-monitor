@@ -1,0 +1,30 @@
+# ========================================= #
+# ==      PARENT SERVER CONFIGURATION    == #
+# ========================================= #
+# Sets the application mode to 'parent'. 
+# The parent runs the main web dashboard and listens for data from child agents.
+ROLE=parent
+
+# (REQUIRED) A unique secret token for the parent server itself.
+# DO NOT share this token. It must be different from all child tokens.
+TOKEN=your-unique-and-secret-parent-token
+
+# The display name for the parent server on the dashboard.
+SERVER_NAME=Dashboard-Utama
+
+# The host and port for the parent server's web dashboard.
+# '0.0.0.0' makes the server accessible from other machines on your network.
+PARENT_HOST=0.0.0.0
+PARENT_PORT=8000
+
+
+# ---------------------------------------------------- #
+# -- Child Server Configuration (Disabled for Parent) --
+# ---------------------------------------------------- #
+#ROLE=child
+#TOKEN=unique-token-for-a-child
+#PARENT_URL=http://192.168.0.128:8000
+#SERVER_NAME=Ubuntu-Server-01
+#SEND_INTERVAL=2
+#CHILD_HOST=0.0.0.0
+#CHILD_DASHBOARD_PORT=8100

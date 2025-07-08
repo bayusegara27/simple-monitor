@@ -1,0 +1,35 @@
+# ======================================== #
+# ==      CHILD AGENT CONFIGURATION     == #
+# ======================================== #
+# Sets the application mode to 'child'. 
+# The child gathers local system metrics and sends them to the parent server.
+ROLE=child
+
+# (REQUIRED) A unique secret token for THIS child agent.
+# Each child agent MUST have a different token. Do not reuse tokens between agents.
+TOKEN=your-unique-token-for-this-child-agent
+
+# The full URL of the parent server where this agent will send its data.
+# This must match the PARENT_HOST and PARENT_PORT of your running parent server.
+PARENT_URL=http://192.168.0.128:8000
+
+# (Optional) A friendly name for this server that will appear on the dashboard.
+SERVER_NAME=Web-Server-01
+
+# (Optional) The interval in seconds at which the agent sends data to the parent.
+SEND_INTERVAL=2
+
+# (Optional) Host a local-only dashboard on the child machine itself.
+# Uncomment these lines if you want to view this agent's stats directly.
+#CHILD_HOST=0.0.0.0
+#CHILD_DASHBOARD_PORT=8100
+
+
+# ---------------------------------------------------- #
+# -- Parent Server Configuration (Disabled for Child) --
+# ---------------------------------------------------- #
+#ROLE=parent
+#TOKEN=unique-token-for-the-parent
+#SERVER_NAME=Dashboard-Utama
+#PARENT_HOST=0.0.0.0
+#PARENT_PORT=8000

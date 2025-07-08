@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="id" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Server Monitoring Panel</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+    
+    <style>
+        /* Import a clean, modern font */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* Dark blue background */
+            /* Add a subtle dot grid pattern to the background */
+            background-image: radial-gradient(circle at 1px 1px, #334155 1px, transparent 0);
+            background-size: 2rem 2rem;
+        }
+
+        /* Custom scrollbar styling */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+        /* A blue glow effect for the main title */
+        .glow { text-shadow: 0 0 8px rgba(59, 130, 246, 0.6), 0 0 20px rgba(59, 130, 246, 0.4); }
+
+        /* Base style for each server card */
+        .server-card {
+            background: rgba(15, 23, 42, 0.6); /* Semi-transparent background */
+            backdrop-filter: blur(10px); /* Frosted glass effect */
+            transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, opacity 0.3s ease;
+            cursor: pointer;
+        }
+        .server-card:hover {
+            transform: translateY(-5px); /* Lift card on hover */
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.4);
+        }
+        .server-card.selected {
+            border-color: #3b82f6; /* Blue border when selected */
+            box-shadow: 0 0 20px rgba(59, 130, 246, 0.5);
+        }
+        .server-card.offline {
+            opacity: 0.6; /* Fade out offline cards */
+            cursor: not-allowed;
+        }
+        .server-card.offline:hover {
+            transform: none; /* Disable hover effects for offline cards */
+            box-shadow: none;
+        }
+
+        /* Status indicator dots */
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .status-ok { background-color: #22c55e; box-shadow: 0 0 6px #22c55e; animation: pulse 2s infinite; } /* Green for OK */
+        .status-warning { background-color: #f59e0b; box-shadow: 0 0 6px #f59e0b; animation: pulse 2s infinite; } /* Yellow for Warning */
+        .status-danger { background-color: #ef4444; box-shadow: 0 0 6px #ef4444; animation: pulse 2s infinite; } /* Red for Danger */
+        .status-offline { background-color: #64748b; box-shadow: 0 0 6px #64748b; } /* Gray for Offline (no pulse) */
+        
+        /* Pulse animation for online status dots */
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.5; } 100% { opacity: 1; } }
+        
+        /* Styles for sortable table headers */
+        th[data-sort] { cursor: pointer; transition: color 0.2s ease; }
+        th[data-sort]:hover { color: #94a3b8; }
+        .spec-item svg { width: 0.8rem; height: 0.8rem; margin-right: 0.25rem; color: #94a3b8; }
+    </style>
+</head>
+<body class="text-gray-300">
+
+    <div class="min-h-screen p-4 sm:p-6 lg:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-white glow">Infrastructure Overview</h1>
+            <p class="text-gray-400 mt-2">Monitoring all your servers in a single view.</p>
+        </header>
+
+        <main id="main-content">
+            <div id="server-grid" class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-6">
+            </div>
+        </main>
+
+        <section id="process-panel" class="mt-8 bg-slate-800/70 backdrop-blur-sm p-5 rounded-2xl border border-slate-700/80 hidden">
+            <h2 class="text-2xl font-bold text-white mb-4">Top Processes on <span id="selected-server-name"></span></h2>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead class="text-xs text-slate-400 uppercase bg-slate-900/50">
+                        <tr>
+                            <th scope="col" class="p-3" data-sort="name">Process Name</th>
+                            <th scope="col" class="p-3 text-right" data-sort="cpu_percent">CPU %</th>
+                            <th scope="col" class="p-3 text-right" data-sort="memory_percent">Memory %</th>
+                            <th scope="col" class="p-3 text-right" data-sort="net_usage">Network (KB/s)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="process-table-body">
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+
+<script>
+// Wait for the entire HTML document to be loaded before running the script
+document.addEventListener('DOMContentLoaded', function () {
+    
+    // --- GLOBAL VARIABLES ---
+    const PARENT_API_URL = "/api/get_all_servers"; // API endpoint to fetch server data
+    let serverDataStore = {}; // Caches the latest full data object for each server, keyed by token.
+    let chartInstances = {}; // Stores the ApexCharts instances and their history data, keyed by token.
+    let selectedServerToken = null; // Tracks which server card is currently selected.
+    let sortState = { key: 'cpu_percent', order: 'desc' }; // Default sort state for the process list.
+    
+    // An object containing SVG icon strings for hardware specs, to keep the HTML cleaner.
+    const ICONS = {
+        cpu: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M15.75 3v1.5M12 4.5v15m-3.75-15h7.5a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25h-7.5a2.25 2.25 0 0 1-2.25-2.25V6.75a2.25 2.25 0 0 1 2.25-2.25Z" /></svg>`,
+        cores: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-3.75 2.016M6.429 9.75L12 12.75l5.571-3M6.429 9.75l5.571 3L17.571 9.75m-11.142 0l5.571 3l5.571-3M12 21.75l-9.75-5.25v-9l9.75 5.25 9.75-5.25v9l-9.75 5.25Z" /></svg>`,
+        ram: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 3.75H19.5a.75.75 0 0 1 .75.75v15a.75.75 0 0 1-.75.75H8.25a.75.75 0 0 1-.75-.75V4.5a.75.75 0 0 1 .75-.75Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 3.75a.75.75 0 0 0-.75.75v15a.75.75 0 0 0 .75.75h.75" /><path stroke-linecap="round" stroke-linejoin="round" d="M11.25 7.5h.008v.008h-.008V7.5Zm-.008 3.75h.008v.008h-.008v-.008Zm.008 3.75h.008v.008h-.008v-.008Z" /></svg>`,
+        disk: `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h8.25a2.25 2.25 0 0 1 2.25 2.25v9a2.25 2.25 0 0 1-2.25 2.25H8.25a2.25 2.25 0 0 1-2.25-2.25v-9a2.25 2.25 0 0 1 2.25-2.25Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6.75h.008v.008h-.008V6.75Z" /></svg>`
+    };
+
+    /**
+     * Formats network speed in Mbps to a human-readable string (Kbps, Mbps, Gbps).
+     * @param {number} mbps - The speed in Megabits per second.
+     * @returns {{value: string, unit: string}} An object with the formatted value and unit.
+     */
+    function formatSpeed(mbps) {
+        const speed = parseFloat(mbps) || 0;
+        if (speed <= 0) return { value: '0', unit: 'Kbps' };
+        if (speed >= 1000) return { value: (speed / 1000).toFixed(2), unit: 'Gbps' };
+        if (speed >= 1) return { value: speed.toFixed(1), unit: 'Mbps' };
+        return { value: (speed * 1000).toFixed(0), unit: 'Kbps' };
+    }
+
+    /**
+     * Creates the HTML structure for a server card and appends it to the grid.
+     * This function is called only once per server when it first appears.
+     * @param {object} server - The server data object from the API.
+     */
+    function createServerCard(server) {
+        const serverToken = server.token;
+        const grid = document.getElementById('server-grid');
+        // Prevent creating a duplicate card if it already exists
+        if (document.getElementById(`card-${serverToken}`)) return;
+
+        const card = document.createElement('div');
+        card.className = 'server-card border border-slate-700/80 p-5 rounded-2xl flex flex-col';
+        card.id = `card-${serverToken}`;
+        card.addEventListener('click', () => selectServer(serverToken));
+        
+        // Define the inner HTML of the card with placeholders for dynamic data
+        card.innerHTML = `
+            <div class="flex justify-between items-start gap-4 mb-4">
+                <div class="flex-1 min-w-0">
+                    <h3 class="text-xl font-bold text-white truncate" id="name-${serverToken}"></h3>
+                    <p class="text-sm text-slate-400"><span id="os-${serverToken}"></span> (<span id="arch-${serverToken}"></span>)</p>
+                    <div id="specs-hw-${serverToken}" class="text-xs text-slate-400 mt-2 flex flex-wrap gap-x-3 gap-y-1"></div>
+                </div>
+                <div id="status-${serverToken}" class="status-dot flex-shrink-0 mt-1"></div>
+            </div>
+            <div class="grid grid-cols-2 gap-x-6 gap-y-4 text-sm flex-grow">
+                <div><div class="flex items-center gap-2 text-slate-400"><span>CPU</span></div><span id="cpu-text-${serverToken}" class="font-semibold text-2xl text-white mt-1">0%</span></div>
+                <div><div class="flex items-center gap-2 text-slate-400"><span>Memory</span></div><span id="mem-text-${serverToken}" class="font-semibold text-2xl text-white mt-1">0%</span></div>
+                <div><div class="flex items-center gap-2 text-slate-400"><span>Disk</span></div><span id="disk-text-${serverToken}" class="font-semibold text-2xl text-white mt-1">0%</span></div>
+                <div>
+                    <div class="flex items-center gap-2 text-slate-400"><span>Network</span></div>
+                    <div class="flex items-baseline gap-3 mt-1">
+                        <div class="flex items-center gap-1"><svg class="w-3 h-3 text-green-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm.707-10.293a1 1 0 00-1.414-1.414l-3 3a1 1 0 001.414 1.414L9 9.414V13a1 1 0 102 0V9.414l1.293 1.293a1 1 0 001.414-1.414l-3-3z" clip-rule="evenodd"></path></svg><span id="net-down-val-${serverToken}" class="font-semibold text-lg text-white">0</span> <span id="net-down-unit-${serverToken}" class="font-medium text-xs text-slate-400">Kbps</span></div>
+                        <div class="flex items-center gap-1"><svg class="w-3 h-3 text-red-400" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm-.707-6.707a1 1 0 001.414 1.414l3-3a1 1 0 00-1.414-1.414L11 10.586V7a1 1 0 10-2 0v3.586L7.707 9.293a1 1 0 00-1.414 1.414l3 3z" clip-rule="evenodd"></path></svg><span id="net-up-val-${serverToken}" class="font-semibold text-lg text-white">0</span> <span id="net-up-unit-${serverToken}" class="font-medium text-xs text-slate-400">Kbps</span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-auto pt-4 overflow-hidden"><div id="cpu-chart-${serverToken}" class="w-full"></div></div>
+        `;
+        grid.appendChild(card);
+
+        // Initialize a mini sparkline chart for CPU history
+        const chart = new ApexCharts(document.getElementById(`cpu-chart-${serverToken}`), {
+            series: [{ name: 'CPU', data: Array(30).fill(0) }], chart: { type: 'area', height: 60, sparkline: { enabled: true } }, stroke: { curve: 'smooth', width: 2 }, fill: { type: 'gradient', gradient: { shadeIntensity: 1, opacityFrom: 0.4, opacityTo: 0.1 } }, colors: ['#3b82f6'], tooltip: { enabled: false },
+        });
+        chart.render();
+        // Store the chart instance and its data history for future updates
+        chartInstances[serverToken] = { chart, history: Array(30).fill(0) };
+    }
+
+    /**
+     * The main function to update the entire UI with fresh data from the API.
+     * This function is called every few seconds.
+     * @param {Array<object>} servers - An array of server objects from the API.
+     */
+    function updateUI(servers) {
+        const activeServerTokens = new Set(servers.map(s => s.token));
+        
+        // Remove cards for servers that are no longer in the API response
+        Object.keys(chartInstances).forEach(serverToken => {
+            if (!activeServerTokens.has(serverToken)) {
+                document.getElementById(`card-${serverToken}`)?.remove();
+                delete chartInstances[serverToken];
+                delete serverDataStore[serverToken];
+            }
+        });
+
+        // Iterate over each server from the API data to create or update its card
+        servers.forEach(server => {
+            const serverToken = server.token;
+            if (!serverToken) return;
+
+            // If a card for this server doesn't exist, create it.
+            if (!document.getElementById(`card-${serverToken}`)) createServerCard(server);
+            // Update the central data store with the latest server data.
+            serverDataStore[serverToken] = server;
+
+            // Get references to the card's elements for updating
+            const card = document.getElementById(`card-${serverToken}`);
+            const statusDot = document.getElementById(`status-${serverToken}`);
+            const cpuTextEl = document.getElementById(`cpu-text-${serverToken}`);
+
+            // Update static info (in case it changed, e.g., server name)
+            document.getElementById(`name-${serverToken}`).innerText = server.server_name;
+            document.getElementById(`os-${serverToken}`).innerText = server.os || 'N/A';
+            document.getElementById(`arch-${serverToken}`).innerText = server.architecture || 'N/A';
+            const specsContainer = document.getElementById(`specs-hw-${serverToken}`);
+            specsContainer.innerHTML = [
+                `<span class="spec-item inline-flex items-center">${ICONS.cpu} ${(server.cpu_freq_ghz || 0).toFixed(2)} GHz</span>`,
+                `<span class="spec-item inline-flex items-center">${ICONS.cores} ${server.cpu_cores || '?'} Cores</span>`,
+                `<span class="spec-item inline-flex items-center">${ICONS.ram} ${(server.total_ram_gb || 0).toFixed(2)} GiB</span>`,
+                `<span class="spec-item inline-flex items-center">${ICONS.disk} ${(server.total_disk_gb || 0).toFixed(2)} GiB</span>`
+            ].join('');
+
+            // Update dynamic metrics (CPU, RAM, Disk, Network)
+            cpuTextEl.innerText = `${(server.cpu_percent || 0).toFixed(0)}%`;
+            document.getElementById(`mem-text-${serverToken}`).innerText = `${(server.mem_percent || 0).toFixed(0)}%`;
+            document.getElementById(`disk-text-${serverToken}`).innerText = `${(server.disk_percent || 0).toFixed(0)}%`;
+            
+            const downSpeed = formatSpeed(server.net_download_mbps);
+            const upSpeed = formatSpeed(server.net_upload_mbps);
+            document.getElementById(`net-down-val-${serverToken}`).innerText = downSpeed.value;
+            document.getElementById(`net-down-unit-${serverToken}`).innerText = downSpeed.unit;
+            document.getElementById(`net-up-val-${serverToken}`).innerText = upSpeed.value;
+            document.getElementById(`net-up-unit-${serverToken}`).innerText = upSpeed.unit;
+
+            // Handle the server's online/offline status and apply appropriate styles
+            if (server.is_offline) {
+                card.classList.add('offline');
+                statusDot.className = 'status-dot flex-shrink-0 mt-1 status-offline';
+                cpuTextEl.style.color = 'white'; // Reset color
+            } else {
+                card.classList.remove('offline');
+                // Determine status color based on CPU usage
+                let status = 'ok';
+                if (server.cpu_percent > 85) status = 'danger';
+                else if (server.cpu_percent > 60) status = 'warning';
+                statusDot.className = `status-dot flex-shrink-0 mt-1 status-${status}`;
+                cpuTextEl.style.color = status === 'danger' ? '#ef4444' : (status === 'warning' ? '#f59e0b' : 'white');
+            }
+            
+            // Update the CPU history chart for the server
+            const chartInstance = chartInstances[serverToken];
+            if (chartInstance) {
+                chartInstance.history.push(server.cpu_percent || 0);
+                if (chartInstance.history.length > 30) chartInstance.history.shift(); // Keep only the last 30 data points
+                chartInstance.chart.updateSeries([{ data: chartInstance.history }]);
+            }
+        });
+
+        // If a server is selected, refresh its process list
+        if (selectedServerToken && serverDataStore[selectedServerToken]) {
+            renderProcessList();
+        } else if (selectedServerToken && !serverDataStore[selectedServerToken]) {
+            // If the selected server has gone offline, hide the process panel
+            document.getElementById('process-panel').classList.add('hidden');
+            selectedServerToken = null;
+        }
+    }
+    
+    /**
+     * Handles the click event on a server card to show its process list.
+     * @param {string} serverToken - The token of the clicked server.
+     */
+    function selectServer(serverToken) {
+        // Do nothing if an offline server is clicked
+        if (serverDataStore[serverToken]?.is_offline) {
+            return;
+        }
+        
+        const processPanel = document.getElementById('process-panel');
+        // If the clicked server is already selected, deselect it (toggle behavior)
+        if (serverToken === selectedServerToken) {
+            document.getElementById(`card-${serverToken}`)?.classList.remove('selected');
+            processPanel.classList.add('hidden');
+            selectedServerToken = null; 
+            return;
+        }
+
+        // Deselect any previously selected card
+        if (selectedServerToken) { document.getElementById(`card-${selectedServerToken}`)?.classList.remove('selected'); }
+        
+        // Select the new server
+        selectedServerToken = serverToken;
+        document.getElementById(`card-${serverToken}`)?.classList.add('selected');
+        processPanel.classList.remove('hidden');
+        document.getElementById('selected-server-name').innerText = serverDataStore[serverToken].server_name;
+        renderProcessList();
+    }
+    
+    /**
+     * Renders the process list table for the currently selected server.
+     */
+    function renderProcessList() {
+        if (!selectedServerToken || !serverDataStore[selectedServerToken]) return;
+        
+        const server = serverDataStore[selectedServerToken];
+        // Hide panel if the server is offline
+        if (server.is_offline) {
+             document.getElementById('process-panel').classList.add('hidden');
+             return;
+        }
+        
+        const { key, order } = sortState;
+        const processes = server.processes || [];
+
+        // Update table header sort indicators (▲ or ▼)
+        document.querySelectorAll('#process-panel th[data-sort]').forEach(th => {
+            const sortKey = th.dataset.sort;
+            th.innerHTML = th.innerHTML.replace(/ (▲|▼)$/, '');
+            th.classList.remove('text-blue-400');
+            if (sortKey === key) {
+                th.innerHTML += order === 'desc' ? ' ▼' : ' ▲';
+                th.classList.add('text-blue-400');
+            }
+        });
+
+        // Sort the processes based on the current sort state
+        const sortedProcesses = [...processes].sort((a, b) => {
+            let valA = a[key] === undefined ? (key === 'name' ? '' : 0) : a[key];
+            let valB = b[key] === undefined ? (key === 'name' ? '' : 0) : b[key];
+            if (typeof valA === 'string') return order === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+            return order === 'asc' ? valA - valB : valB - valA;
+        });
+
+        // Generate and insert the table rows
+        const tbody = document.getElementById('process-table-body');
+        tbody.innerHTML = sortedProcesses.map(p => `
+            <tr class="border-b border-slate-700/50 hover:bg-slate-900/50">
+                <td class="p-3 font-medium text-white">${p.name || 'N/A'}</td>
+                <td class="p-3 text-right">${(p.cpu_percent || 0).toFixed(2)}</td>
+                <td class="p-3 text-right">${(p.memory_percent || 0).toFixed(2)}</td>
+                <td class="p-3 text-right">${(p.net_usage || 0).toFixed(2)}</td>
+            </tr>
+        `).join('') || `<tr><td colspan="4" class="p-4 text-center text-slate-400">No process data available.</td></tr>`;
+    }
+    
+    /**
+     * Fetches server data from the parent's API endpoint.
+     */
+    async function fetchData() {
+        try {
+            const response = await fetch(PARENT_API_URL);
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const data = await response.json();
+            updateUI(data); // Call the main UI update function with the new data
+        } catch (error) {
+            console.error("Could not fetch data from parent server:", error);
+        }
+    }
+
+    // Add a click listener to the process table header for sorting
+    document.querySelector('#process-panel thead').addEventListener('click', (e) => {
+        const th = e.target.closest('th');
+        if (th && th.dataset.sort) {
+            const key = th.dataset.sort;
+            const order = (sortState.key === key && sortState.order === 'desc') ? 'asc' : 'desc';
+            sortState = { key, order };
+            renderProcessList();
+        }
+    });
+
+    // --- INITIALIZATION ---
+    // Fetch data every 3 seconds to keep the dashboard live
+    setInterval(fetchData, 3000);
+    // Fetch data immediately on page load
+    fetchData();
+});
+</script>
+
+</body>
+</html>
