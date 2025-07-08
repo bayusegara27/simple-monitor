@@ -45,37 +45,52 @@ def init_db():
 # --- LOCAL METRICS GATHERING ---
 
 class NetworkMonitor:
-    """A helper class to calculate network speed over time."""
+    """A helper class to calculate network speed over time, with error handling for Termux."""
     def __init__(self):
+        self.can_monitor_network = False  # Assume network monitoring is disabled by default
+        try:
+            # Try to access the restricted network stats file
+            self.last_io = psutil.net_io_counters()
+            self.can_monitor_network = True  # If successful, enable network monitoring
+            print("[INFO] Network monitoring is available.")
+        except (PermissionError, FileNotFoundError):
+            # If permission is denied (common on Android without root), handle it gracefully
+            self.last_io = None
+            print("[WARNING] Could not access network stats. Network speed monitoring will be disabled.")
+
         self.last_check = time.time()
-        self.last_io = psutil.net_io_counters()
 
     def get_speed(self):
         """
-        Calculates the current upload and download speed in Mbps.
-        It compares network I/O counters between two points in time.
+        Calculates network speed. If permission was denied during initialization,
+        this will safely return 0 without causing a crash.
         """
-        current_time = time.time()
-        current_io = psutil.net_io_counters()
-        elapsed_time = current_time - self.last_check
-        
-        # Avoid division by zero if the function is called too quickly
-        if elapsed_time < 1: 
+        # If monitoring is disabled, return 0 immediately
+        if not self.can_monitor_network or self.last_io is None:
             return 0.0, 0.0
-            
-        # Calculate bytes sent and received during the interval
-        bytes_sent = current_io.bytes_sent - self.last_io.bytes_sent
-        bytes_recv = current_io.bytes_recv - self.last_io.bytes_recv
-        
-        # Convert bytes per second to Megabits per second (Mbps)
-        upload_speed_mbps = (bytes_sent * 8) / (elapsed_time * 1024 * 1024)
-        download_speed_mbps = (bytes_recv * 8) / (elapsed_time * 1024 * 1024)
-        
-        # Update the last check time and I/O counters for the next calculation
-        self.last_check = current_time
-        self.last_io = current_io
-        
-        return upload_speed_mbps, download_speed_mbps
+
+        try:
+            current_time = time.time()
+            current_io = psutil.net_io_counters()
+            elapsed_time = current_time - self.last_check
+
+            if elapsed_time < 1:
+                return 0.0, 0.0
+
+            bytes_sent = current_io.bytes_sent - self.last_io.bytes_sent
+            bytes_recv = current_io.bytes_recv - self.last_io.bytes_recv
+
+            upload_speed_mbps = (bytes_sent * 8) / (elapsed_time * 1024 * 1024)
+            download_speed_mbps = (bytes_recv * 8) / (elapsed_time * 1024 * 1024)
+
+            self.last_check = current_time
+            self.last_io = current_io
+
+            return upload_speed_mbps, download_speed_mbps
+        except Exception as e:
+            # Fallback for any other unexpected errors during metric collection
+            print(f"[ERROR] An unexpected error occurred in get_speed: {e}")
+            return 0.0, 0.0
 
 # Global cache for this machine's metrics
 local_metrics_cache = {} 
