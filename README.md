@@ -1,4 +1,4 @@
-# Simple Monitor
+# Lightweight Multi-Server Monitoring Dashboard
 
 <p align="center">
   <img src="img/preview.png" alt="Dashboard Screenshot" width="700"/>
