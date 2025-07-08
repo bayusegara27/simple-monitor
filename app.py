@@ -45,37 +45,52 @@ def init_db():
 # --- LOCAL METRICS GATHERING ---
 
 class NetworkMonitor:
-    """A helper class to calculate network speed over time."""
+    """A helper class to calculate network speed over time, with error handling for Termux."""
     def __init__(self):
+        self.can_monitor_network = False  # Assume network monitoring is disabled by default
+        try:
+            # Try to access the restricted network stats file
+            self.last_io = psutil.net_io_counters()
+            self.can_monitor_network = True  # If successful, enable network monitoring
+            print("[INFO] Network monitoring is available.")
+        except (PermissionError, FileNotFoundError):
+            # If permission is denied (common on Android without root), handle it gracefully
+            self.last_io = None
+            print("[WARNING] Could not access network stats. Network speed monitoring will be disabled.")
+
         self.last_check = time.time()
-        self.last_io = psutil.net_io_counters()
 
     def get_speed(self):
         """
-        Calculates the current upload and download speed in Mbps.
-        It compares network I/O counters between two points in time.
+        Calculates network speed. If permission was denied during initialization,
+        this will safely return 0 without causing a crash.
         """
-        current_time = time.time()
-        current_io = psutil.net_io_counters()
-        elapsed_time = current_time - self.last_check
-        
-        # Avoid division by zero if the function is called too quickly
-        if elapsed_time < 1: 
+        # If monitoring is disabled, return 0 immediately
+        if not self.can_monitor_network or self.last_io is None:
             return 0.0, 0.0
-            
-        # Calculate bytes sent and received during the interval
-        bytes_sent = current_io.bytes_sent - self.last_io.bytes_sent
-        bytes_recv = current_io.bytes_recv - self.last_io.bytes_recv
-        
-        # Convert bytes per second to Megabits per second (Mbps)
-        upload_speed_mbps = (bytes_sent * 8) / (elapsed_time * 1024 * 1024)
-        download_speed_mbps = (bytes_recv * 8) / (elapsed_time * 1024 * 1024)
-        
-        # Update the last check time and I/O counters for the next calculation
-        self.last_check = current_time
-        self.last_io = current_io
-        
-        return upload_speed_mbps, download_speed_mbps
+
+        try:
+            current_time = time.time()
+            current_io = psutil.net_io_counters()
+            elapsed_time = current_time - self.last_check
+
+            if elapsed_time < 1:
+                return 0.0, 0.0
+
+            bytes_sent = current_io.bytes_sent - self.last_io.bytes_sent
+            bytes_recv = current_io.bytes_recv - self.last_io.bytes_recv
+
+            upload_speed_mbps = (bytes_sent * 8) / (elapsed_time * 1024 * 1024)
+            download_speed_mbps = (bytes_recv * 8) / (elapsed_time * 1024 * 1024)
+
+            self.last_check = current_time
+            self.last_io = current_io
+
+            return upload_speed_mbps, download_speed_mbps
+        except Exception as e:
+            # Fallback for any other unexpected errors during metric collection
+            print(f"[ERROR] An unexpected error occurred in get_speed: {e}")
+            return 0.0, 0.0
 
 # Global cache for this machine's metrics
 local_metrics_cache = {} 
@@ -85,40 +100,46 @@ net_monitor_global = NetworkMonitor()
 def update_local_metrics_continuously():
     """
     A background thread that continuously gathers and updates local system metrics.
-    This runs on both the parent and all children.
+    Includes robust error handling for environments like non-rooted Termux.
     """
     # Gather static hardware info once to save resources
-    architecture = platform.machine()
-    total_ram_gb = psutil.virtual_memory().total / (1024**3)
-    total_disk_gb = psutil.disk_usage('/').total / (1024**3)
-    cpu_cores = psutil.cpu_count(logical=True)
     try:
-        cpu_freq = psutil.cpu_freq()
-        # Get max frequency, fallback to current if max is not available
-        cpu_freq_max_ghz = (cpu_freq.max if cpu_freq and cpu_freq.max > 0 else cpu_freq.current) / 1000
-    except Exception:
-        cpu_freq_max_ghz = 0 # Fallback if frequency can't be read
+        architecture = platform.machine()
+        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+        total_disk_gb = psutil.disk_usage('/').total / (1024**3)
+        cpu_cores = psutil.cpu_count(logical=True)
+        try:
+            cpu_freq = psutil.cpu_freq()
+            cpu_freq_max_ghz = (cpu_freq.max if cpu_freq and cpu_freq.max > 0 else cpu_freq.current) / 1000
+        except (PermissionError, FileNotFoundError):
+             cpu_freq_max_ghz = 0 # Fallback if frequency can't be read
+
+    except (PermissionError, FileNotFoundError) as e:
+        print("\n--- [FATAL ERROR] ---")
+        print(f"Initial permission denied to read system hardware info: {e}")
+        print("This device cannot be monitored. The agent will not start.")
+        print("-----------------------\n")
+        return # Exit the function completely
 
     # Main loop to update dynamic metrics
     while True:
         try:
             # Get current CPU, memory, and disk usage percentages
+            # This is the line that causes the '/proc/stat' error
             cpu_percent = psutil.cpu_percent(interval=1)
             mem = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
-            
+
             # Get a list of the top 20 processes sorted by CPU usage
             processes = []
             process_iter = psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent'])
-            sorted_processes = sorted(process_iter, key=lambda p: p.info['cpu_percent'], reverse=True)
+            sorted_processes = sorted(process_iter, key=lambda p: p.info.get('cpu_percent', 0) or 0, reverse=True)
             for proc in sorted_processes[:20]:
                 try:
                     proc_info = proc.info
-                    # A simple metric to estimate network usage for display
                     proc_info['net_usage'] = (proc_info.get('cpu_percent', 0) * 5) + (proc_info.get('memory_percent', 0) * 10)
                     processes.append({k: v if v is not None else 0 for k, v in proc_info.items()})
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    # Ignore processes that can't be accessed or no longer exist
                     pass
 
             # Get current network speeds
@@ -143,9 +164,20 @@ def update_local_metrics_continuously():
                 'last_updated': time.time(),
                 'is_offline': False
             })
+
+        except (PermissionError, FileNotFoundError):
+            # If a permission error occurs here, it's critical.
+            # We will stop the thread to prevent spamming the console.
+            print("\n--- [AGENT STOPPED] ---")
+            print("Permission denied while trying to read core system stats (e.g., /proc/stat).")
+            print("This is a common issue on non-rooted Android/Termux.")
+            print("The monitoring agent on this device cannot continue and has been stopped.")
+            print("------------------------\n")
+            break  # Exit the while loop to terminate this thread.
+
         except Exception as e:
-            print(f"Error updating local metrics: {e}")
-        # Wait for 2 seconds before the next update
+            print(f"An unexpected error occurred while updating metrics: {e}")
+
         time.sleep(2)
 
 # --- CHILD AGENT FUNCTIONS (CHILD-ONLY) ---
