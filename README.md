@@ -13,8 +13,7 @@
   <a href="#tech-stack">Tech Stack</a> •
   <a href="#getting-started">Getting Started</a> •
   <a href="#configuration">Configuration</a> •
-  <a href="#usage">Usage</a> •
-  <a href="#license">License</a>
+  <a href="#usage">Usage</a>
 </p>
 
 ---
